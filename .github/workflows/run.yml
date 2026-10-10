@@ -1,7 +1,50 @@
-env:
+name: Run bot
+
+on:
+  # ручной запуск
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "daily / weekly / recent / all"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - daily
+          - weekly
+          - recent
+
+  # каждый день в 20:50 UTC ≈ 23:50 МСК
+  schedule:
+    - cron: "50 20 * * *"
+
+jobs:
+  bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run combo
+        env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           FULL_COOKIE: ${{ secrets.FULL_COOKIE }}
           CLUB_SLUG: ${{ secrets.CLUB_SLUG }}
-          MODE: all
           FREE_PROXIES: ${{ secrets.FREE_PROXIES }}
+          # если запустили вручную — берём mode из input, иначе all
+          MODE: ${{ github.event.inputs.mode || 'all' }}
+        run: python bot.py
