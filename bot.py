@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MangaBuff club bot — FULL COMBO + все ошибки + отправка в Telegram
+MangaBuff bot — FULL COMBO
+MODE=all | FREE_PROXIES | errors → Telegram
 """
+
+from __future__ import annotations
 
 import os
 import re
 import sys
+import time
 import traceback
 from datetime import datetime
+from typing import List, Optional, Tuple
 from urllib.parse import unquote
 from zoneinfo import ZoneInfo
-from typing import Optional, Tuple
 
 import requests
 from bs4 import BeautifulSoup
@@ -28,24 +32,28 @@ try:
 except Exception:
     HAS_CS = False
 
-# === Secrets ===
+# ---------- secrets / env ----------
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 CHAT_ID = os.environ.get("CHAT_ID", "").strip()
 FULL_COOKIE = os.environ.get("FULL_COOKIE", "").strip()
 CLUB_SLUG = os.environ.get("CLUB_SLUG", "utinoe-bratstvo").strip()
-MODE = os.environ.get("MODE", "all").strip().lower()
+MODE = os.environ.get("MODE", "all").strip().lower()  # daily | weekly | recent | all
+FREE_PROXIES = os.environ.get("FREE_PROXIES", "").strip()
 
 BASE = "https://mangabuff.ru"
 CLUB_NAME = "Утиное Братство"
 MSK = ZoneInfo("Europe/Moscow")
 
 UA_LIST = [
-    "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 Chrome/131.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
 ]
 
-BAD_WORDS = ("замен", "опыт", "сегодня", "доступно", "карт", "штраф", "бесплат", "платн", "неделя", "сутки", "месяц", "правил", "клуб", "boost", "history", "войти", "регистр")
+BAD_WORDS = (
+    "замен", "опыт", "сегодня", "доступно", "карт", "штраф", "бесплат", "платн",
+    "неделя", "сутки", "месяц", "правил", "клуб", "boost", "history", "войти", "регистр",
+)
 
 
 def now_msk() -> str:
@@ -53,31 +61,31 @@ def now_msk() -> str:
 
 
 def send_telegram(text: str) -> None:
-    """Отправка сообщения в Telegram (полная функция)"""
     if not BOT_TOKEN or not CHAT_ID:
-        print("❌ Нет BOT_TOKEN или CHAT_ID в секретах")
+        print("⚠️ Нет BOT_TOKEN или CHAT_ID — в Telegram не отправлено")
         return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    data = {
-        "chat_id": CHAT_ID,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True,
-    }
-    r = requests.post(url, json=data, timeout=30)
+    r = requests.post(
+        url,
+        json={
+            "chat_id": CHAT_ID,
+            "text": text[:4000],
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        },
+        timeout=30,
+    )
     if not r.ok:
         print(f"❌ Telegram error: {r.status_code} {r.text[:300]}")
 
 
 def die(msg: str, code: int = 1) -> None:
-    """Все ошибки + отправка в Telegram"""
     print(msg, file=sys.stderr)
-    send_telegram(f"❌ <b>MangaBuff bot</b>\n<code>{msg[:4000]}</code>")
+    send_telegram(f"❌ <b>MangaBuff bot</b>\n<code>{msg[:3500]}</code>")
     raise SystemExit(code)
 
 
 def xsrf_from_cookie() -> Optional[str]:
-    """Исправленная функция — теперь не падает на NameError"""
     if not FULL_COOKIE:
         return None
     m = re.search(r"(?:^|;\s*)XSRF-TOKEN=([^;]+)", FULL_COOKIE)
@@ -95,6 +103,7 @@ def base_headers(ua: str) -> dict:
         "Pragma": "no-cache",
         "Referer": f"{BASE}/clubs/{CLUB_SLUG}/boost",
         "Origin": BASE,
+        "Upgrade-Insecure-Requests": "1",
     }
     if FULL_COOKIE:
         h["Cookie"] = FULL_COOKIE
@@ -105,9 +114,22 @@ def base_headers(ua: str) -> dict:
     return h
 
 
-# ====================== Все возможные ошибки ======================
+def proxy_list() -> List[Optional[dict]]:
+    """None = direct, потом FREE_PROXIES"""
+    out: List[Optional[dict]] = [None]
+    if not FREE_PROXIES:
+        return out
+    for p in FREE_PROXIES.split(","):
+        p = p.strip()
+        if not p:
+            continue
+        if not p.startswith("http"):
+            p = "http://" + p
+        out.append({"http": p, "https": p})
+    return out
 
-def check_error(status: int, text: str, final_url: str, engine: str) -> Optional[str]:
+
+def check_error(status: int, text: str, final_url: str) -> Optional[str]:
     head = (text or "")[:1500].lower()
     if status == 403 or "ddos-guard" in head or "ddos guard" in head:
         return "DDoS-Guard 403 (защита сайта)"
@@ -115,46 +137,53 @@ def check_error(status: int, text: str, final_url: str, engine: str) -> Optional
         return "429 Too Many Requests"
     if status != 200:
         return f"HTTP {status}"
-    if "/login" in (final_url or "") or "login" in head:
+    if "/login" in (final_url or "") or ("login" in head and "войти" in head):
         return "Cookie мёртвый (редирект на login)"
-    if "challenge" in head or "captcha" in head or "bot" in head or "human" in head:
-        return "Cloudflare Challenge / CAPTCHA"
-    if "защита" in head or "blocked" in head or "banned" in head:
-        return "Сайт заблокировал запрос"
+    if "challenge" in head or "captcha" in head:
+        return "Challenge / CAPTCHA"
     return None
 
 
-# ====================== Движок с всеми вариантами ======================
-
+# ---------- engines ----------
 def fetch_cffi(url: str, ua: str, proxies: Optional[dict]) -> Tuple[int, str, str]:
     if not HAS_CFFI:
         raise RuntimeError("curl_cffi не установлен")
-    sess = cffi_requests.Session()
-    r = sess.get(url, headers=base_headers(ua), timeout=45, allow_redirects=True, proxies=proxies, impersonate="chrome131")
-    err = check_error(r.status_code, r.text, getattr(r, "url", ""), "curl_cffi")
-    if err:
-        raise RuntimeError(err)
-    return r.status_code, r.text or "", getattr(r, "url", url) or url
+    r = cffi_requests.get(
+        url,
+        headers=base_headers(ua),
+        timeout=45,
+        allow_redirects=True,
+        proxies=proxies,
+        impersonate="chrome131",
+    )
+    return r.status_code, r.text or "", str(getattr(r, "url", url) or url)
 
 
 def fetch_cloudscraper(url: str, ua: str, proxies: Optional[dict]) -> Tuple[int, str, str]:
     if not HAS_CS:
         raise RuntimeError("cloudscraper не установлен")
-    scraper = cloudscraper.create_scraper()
-    r = scraper.get(url, headers=base_headers(ua), timeout=45, allow_redirects=True, proxies=proxies)
-    err = check_error(r.status_code, r.text, getattr(r, "url", ""), "cloudscraper")
-    if err:
-        raise RuntimeError(err)
-    return r.status_code, r.text or "", getattr(r, "url", url) or url
+    scraper = cloudscraper.create_scraper(
+        browser={"browser": "chrome", "platform": "android", "mobile": True}
+    )
+    r = scraper.get(
+        url,
+        headers=base_headers(ua),
+        timeout=45,
+        allow_redirects=True,
+        proxies=proxies,
+    )
+    return r.status_code, r.text or "", str(getattr(r, "url", url) or url)
 
 
 def fetch_requests(url: str, ua: str, proxies: Optional[dict]) -> Tuple[int, str, str]:
-    s = requests.Session()
-    r = s.get(url, headers=base_headers(ua), timeout=45, allow_redirects=True, proxies=proxies)
-    err = check_error(r.status_code, r.text, getattr(r, "url", ""), "requests")
-    if err:
-        raise RuntimeError(err)
-    return r.status_code, r.text or "", getattr(r, "url", url) or url
+    r = requests.get(
+        url,
+        headers=base_headers(ua),
+        timeout=45,
+        allow_redirects=True,
+        proxies=proxies,
+    )
+    return r.status_code, r.text or "", str(getattr(r, "url", url) or url)
 
 
 ENGINES = []
@@ -166,34 +195,53 @@ ENGINES.append(("requests", fetch_requests))
 
 
 def smart_fetch(url: str) -> str:
-    """Все варианты + понятные ошибки"""
+    errors: List[str] = []
     for engine_name, engine in ENGINES:
         for ua in UA_LIST:
-            for proxies in [None]:  # direct only (без free proxies пока)
+            for proxies in proxy_list():
+                tag = "direct" if proxies is None else (proxies.get("http") or "?")
                 try:
+                    print(f"[try] {engine_name} | {tag}")
                     status, text, final = engine(url, ua, proxies)
-                    err = check_error(status, text, final, engine_name)
+                    err = check_error(status, text, final)
                     if err:
-                        raise RuntimeError(err)
+                        print(f"  fail: {err}")
+                        errors.append(f"{engine_name}/{tag}: {err}")
+                        time.sleep(0.4)
+                        continue
+                    print(f"  OK {engine_name} via {tag} len={len(text)}")
                     return text
                 except Exception as e:
-                    print(f"[{engine_name}] {e}")
-    raise RuntimeError("Все бесплатные варианты провалились")
+                    msg = f"{engine_name}/{tag}: {type(e).__name__}: {e}"
+                    print(f"  fail: {msg}")
+                    errors.append(msg)
+                    time.sleep(0.3)
+    raise RuntimeError(
+        "Все бесплатные варианты провалились\n"
+        f"cookie_len={len(FULL_COOKIE)} free_proxies={bool(FREE_PROXIES)}\n"
+        + "\n".join(errors[-12:])
+    )
 
 
-# ====================== Парсинг ======================
-
-def parse_boost_top(html: str, limit: int = 15) -> list:
+# ---------- parse ----------
+def parse_boost_top(html: str, limit: int = 15) -> List[Tuple[str, str]]:
     soup = BeautifulSoup(html, "lxml")
-    out = []
+    out: List[Tuple[str, str]] = []
     seen = set()
-    for el in soup.select("a[href*='/users/'], li, tr, [class*='member'], [class*='boost']"):
+    for el in soup.select(
+        "a[href*='/users/'], li, tr, [class*='member'], [class*='boost'], [class*='top'], [class*='rating']"
+    ):
         text = " ".join(el.get_text(" ", strip=True).split())
+        if not text or len(text) > 90:
+            continue
         m = re.search(r"^(.+?)\s+(\d{1,7})$", text)
         if not m:
             continue
         name, score = m.group(1).strip(), m.group(2)
-        if any(b in name.lower() for b in BAD_WORDS) or name in seen:
+        low = name.lower()
+        if any(b in low for b in BAD_WORDS) or name in seen or name.isdigit():
+            continue
+        if not re.search(r"[A-Za-zА-Яа-я]", name):
             continue
         seen.add(name)
         out.append((name, score))
@@ -202,37 +250,49 @@ def parse_boost_top(html: str, limit: int = 15) -> list:
     return out
 
 
-def parse_history(html: str, limit: int = 10) -> list:
+def parse_history(html: str, limit: int = 10) -> List[str]:
     soup = BeautifulSoup(html, "lxml")
-    out = []
+    out: List[str] = []
     seen = set()
-    for el in soup.select("li, tr, [class*='history']"):
+    for el in soup.select("li, tr, [class*='history'], [class*='log'], [class*='contrib']"):
         t = " ".join(el.get_text(" ", strip=True).split())
-        if 8 < len(t) < 140 and t not in seen:
-            out.append(t)
-            seen.add(t)
+        if not (8 < len(t) < 140) or t in seen:
+            continue
+        if "ddos" in t.lower() or "cookie" in t.lower():
+            continue
+        seen.add(t)
+        out.append(t)
         if len(out) >= limit:
             break
     return out
 
 
-# ====================== Форматирование ======================
-
-def format_top(title: str, rows: list) -> str:
+def format_top(title: str, rows: List[Tuple[str, str]]) -> str:
     medals = ["🥇", "🥈", "🥉"]
-    lines = [f"<b>{title}</b>", f"<i>{now_msk()}</i>", f"Клуб: <b>{CLUB_NAME}</b>", ""]
+    lines = [
+        f"<b>{title}</b>",
+        f"<i>{now_msk()}</i>",
+        f"Клуб: <b>{CLUB_NAME}</b>",
+        "",
+    ]
     if not rows:
-        lines.append("⚠️ Топ не разобран")
+        lines.append("⚠️ Топ не разобран (вёрстка / cookie / защита)")
     else:
         for i, (name, score) in enumerate(rows):
-            lines.append(f"{medals[i] if i < 3 else f'{i+1}.'} <b>{name}</b> — {score}")
+            p = medals[i] if i < 3 else f"{i + 1}."
+            lines.append(f"{p} <b>{name}</b> — {score}")
     return "\n".join(lines)
 
 
-def format_history(items: list) -> str:
-    lines = [f"<b>📜 Последние вклады</b>", f"<i>{now_msk()}</i>", f"Клуб: <b>{CLUB_NAME}</b>", ""]
+def format_history(items: List[str]) -> str:
+    lines = [
+        "<b>📜 Последние вклады</b>",
+        f"<i>{now_msk()}</i>",
+        f"Клуб: <b>{CLUB_NAME}</b>",
+        "",
+    ]
     if not items:
-        lines.append("⚠️ Пусто")
+        lines.append("⚠️ История пуста / не распарсилась")
     else:
         for i, t in enumerate(items, 1):
             lines.append(f"{i}. {t}")
@@ -240,26 +300,45 @@ def format_history(items: list) -> str:
 
 
 def main() -> int:
-    print("MODE", MODE, "CLUB", CLUB_SLUG, "cookie_len", len(FULL_COOKIE))
+    print("=" * 50)
+    print("MODE", MODE)
+    print("CLUB", CLUB_SLUG)
+    print("cookie_len", len(FULL_COOKIE))
+    print("FREE_PROXIES", bool(FREE_PROXIES), "count", len([x for x in FREE_PROXIES.split(",") if x.strip()]) if FREE_PROXIES else 0)
+    print("engines", [n for n, _ in ENGINES])
+    print("=" * 50)
 
     if not BOT_TOKEN or not CHAT_ID:
-        die("Нет BOT_TOKEN или CHAT_ID в секретах")
+        die("Нет BOT_TOKEN или CHAT_ID")
 
     if not FULL_COOKIE or len(FULL_COOKIE) < 40:
         die("FULL_COOKIE пустой или короткий")
 
     try:
         if MODE in ("daily", "weekly", "all"):
-            rows = parse_boost_top(smart_fetch(f"{BASE}/clubs/{CLUB_SLUG}/boost"))
-            send_telegram(format_top("📊 Топ вкладов", rows))
+            html = smart_fetch(f"{BASE}/clubs/{CLUB_SLUG}/boost")
+            rows = parse_boost_top(html)
+            title = "📊 Топ за сутки (boost)" if MODE == "daily" else "📊 Топ (boost)"
+            if MODE == "weekly":
+                title = "📊 Топ за неделю (boost)"
+            send_telegram(format_top(title, rows))
+            print("top rows:", len(rows))
 
         if MODE in ("recent", "all"):
-            items = parse_history(smart_fetch(f"{BASE}/clubs/{CLUB_SLUG}/history"))
+            html = smart_fetch(f"{BASE}/clubs/{CLUB_SLUG}/history")
+            items = parse_history(html)
             send_telegram(format_history(items))
+            print("history lines:", len(items))
+
+        if MODE not in ("daily", "weekly", "recent", "all"):
+            die(f"Unknown MODE={MODE}")
 
         return 0
     except Exception as e:
+        tb = traceback.format_exc()
+        print(tb, file=sys.stderr)
         die(str(e))
+        return 1
 
 
 if __name__ == "__main__":
