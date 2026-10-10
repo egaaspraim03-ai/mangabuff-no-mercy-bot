@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 MangaBuff bot — FULL COMBO
-MODE=all | FREE_PROXIES | errors → Telegram
+MODE=all | FREE_PROXIES | DDoS errors → Telegram
+CLUB_SLUG чистится, если вставили полный URL
 """
 
 from __future__ import annotations
@@ -32,15 +33,24 @@ try:
 except Exception:
     HAS_CS = False
 
-# ---------- secrets / env ----------
+# ===================== ENV =====================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 CHAT_ID = os.environ.get("CHAT_ID", "").strip()
 FULL_COOKIE = os.environ.get("FULL_COOKIE", "").strip()
-CLUB_SLUG = os.environ.get("CLUB_SLUG", "utinoe-bratstvo").strip()
-MODE = os.environ.get("MODE", "all").strip().lower()  # daily | weekly | recent | all
 FREE_PROXIES = os.environ.get("FREE_PROXIES", "").strip()
+MODE = os.environ.get("MODE", "all").strip().lower()  # daily | weekly | recent | all
+
+# CLUB_SLUG — только slug, если случайно полный URL — чистим
+_raw_slug = os.environ.get("CLUB_SLUG", "utinoe-bratstvo").strip().rstrip("/")
+if "mangabuff.ru" in _raw_slug or "/" in _raw_slug:
+    m = re.search(r"clubs/([^/?#]+)", _raw_slug)
+    CLUB_SLUG = m.group(1) if m else _raw_slug.split("/")[-1]
+else:
+    CLUB_SLUG = _raw_slug or "utinoe-bratstvo"
 
 BASE = "https://mangabuff.ru"
+BOOST_URL = f"{BASE}/clubs/{CLUB_SLUG}/boost"
+HISTORY_URL = f"{BASE}/clubs/{CLUB_SLUG}/history"
 CLUB_NAME = "Утиное Братство"
 MSK = ZoneInfo("Europe/Moscow")
 
@@ -65,18 +75,21 @@ def send_telegram(text: str) -> None:
         print("⚠️ Нет BOT_TOKEN или CHAT_ID — в Telegram не отправлено")
         return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    r = requests.post(
-        url,
-        json={
-            "chat_id": CHAT_ID,
-            "text": text[:4000],
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        },
-        timeout=30,
-    )
-    if not r.ok:
-        print(f"❌ Telegram error: {r.status_code} {r.text[:300]}")
+    try:
+        r = requests.post(
+            url,
+            json={
+                "chat_id": CHAT_ID,
+                "text": text[:4000],
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            },
+            timeout=30,
+        )
+        if not r.ok:
+            print(f"❌ Telegram error: {r.status_code} {r.text[:300]}")
+    except Exception as e:
+        print(f"❌ Telegram send failed: {e}")
 
 
 def die(msg: str, code: int = 1) -> None:
@@ -101,7 +114,7 @@ def base_headers(ua: str) -> dict:
         "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
         "Cache-Control": "no-cache",
         "Pragma": "no-cache",
-        "Referer": f"{BASE}/clubs/{CLUB_SLUG}/boost",
+        "Referer": BOOST_URL,
         "Origin": BASE,
         "Upgrade-Insecure-Requests": "1",
     }
@@ -115,8 +128,7 @@ def base_headers(ua: str) -> dict:
 
 
 def proxy_list() -> List[Optional[dict]]:
-    """None = direct, потом FREE_PROXIES"""
-    out: List[Optional[dict]] = [None]
+    out: List[Optional[dict]] = [None]  # сначала direct
     if not FREE_PROXIES:
         return out
     for p in FREE_PROXIES.split(","):
@@ -144,7 +156,7 @@ def check_error(status: int, text: str, final_url: str) -> Optional[str]:
     return None
 
 
-# ---------- engines ----------
+# ===================== ENGINES =====================
 def fetch_cffi(url: str, ua: str, proxies: Optional[dict]) -> Tuple[int, str, str]:
     if not HAS_CFFI:
         raise RuntimeError("curl_cffi не установлен")
@@ -207,7 +219,7 @@ def smart_fetch(url: str) -> str:
                     if err:
                         print(f"  fail: {err}")
                         errors.append(f"{engine_name}/{tag}: {err}")
-                        time.sleep(0.4)
+                        time.sleep(0.35)
                         continue
                     print(f"  OK {engine_name} via {tag} len={len(text)}")
                     return text
@@ -215,21 +227,23 @@ def smart_fetch(url: str) -> str:
                     msg = f"{engine_name}/{tag}: {type(e).__name__}: {e}"
                     print(f"  fail: {msg}")
                     errors.append(msg)
-                    time.sleep(0.3)
+                    time.sleep(0.25)
     raise RuntimeError(
         "Все бесплатные варианты провалились\n"
         f"cookie_len={len(FULL_COOKIE)} free_proxies={bool(FREE_PROXIES)}\n"
+        f"url={url}\n"
         + "\n".join(errors[-12:])
     )
 
 
-# ---------- parse ----------
+# ===================== PARSE =====================
 def parse_boost_top(html: str, limit: int = 15) -> List[Tuple[str, str]]:
     soup = BeautifulSoup(html, "lxml")
     out: List[Tuple[str, str]] = []
     seen = set()
     for el in soup.select(
-        "a[href*='/users/'], li, tr, [class*='member'], [class*='boost'], [class*='top'], [class*='rating']"
+        "a[href*='/users/'], li, tr, [class*='member'], [class*='boost'], "
+        "[class*='top'], [class*='rating'], [class*='contrib']"
     ):
         text = " ".join(el.get_text(" ", strip=True).split())
         if not text or len(text) > 90:
@@ -300,13 +314,15 @@ def format_history(items: List[str]) -> str:
 
 
 def main() -> int:
-    print("=" * 50)
-    print("MODE", MODE)
-    print("CLUB", CLUB_SLUG)
-    print("cookie_len", len(FULL_COOKIE))
-    print("FREE_PROXIES", bool(FREE_PROXIES), "count", len([x for x in FREE_PROXIES.split(",") if x.strip()]) if FREE_PROXIES else 0)
-    print("engines", [n for n, _ in ENGINES])
-    print("=" * 50)
+    print("=" * 55)
+    print("MODE        =", MODE)
+    print("CLUB_SLUG   =", CLUB_SLUG)
+    print("BOOST_URL   =", BOOST_URL)
+    print("HISTORY_URL =", HISTORY_URL)
+    print("cookie_len  =", len(FULL_COOKIE))
+    print("FREE_PROXIES=", bool(FREE_PROXIES))
+    print("engines     =", [n for n, _ in ENGINES])
+    print("=" * 55)
 
     if not BOT_TOKEN or not CHAT_ID:
         die("Нет BOT_TOKEN или CHAT_ID")
@@ -316,16 +332,19 @@ def main() -> int:
 
     try:
         if MODE in ("daily", "weekly", "all"):
-            html = smart_fetch(f"{BASE}/clubs/{CLUB_SLUG}/boost")
+            html = smart_fetch(BOOST_URL)
             rows = parse_boost_top(html)
-            title = "📊 Топ за сутки (boost)" if MODE == "daily" else "📊 Топ (boost)"
             if MODE == "weekly":
                 title = "📊 Топ за неделю (boost)"
+            elif MODE == "daily":
+                title = "📊 Топ за сутки (boost)"
+            else:
+                title = "📊 Топ (boost)"
             send_telegram(format_top(title, rows))
             print("top rows:", len(rows))
 
         if MODE in ("recent", "all"):
-            html = smart_fetch(f"{BASE}/clubs/{CLUB_SLUG}/history")
+            html = smart_fetch(HISTORY_URL)
             items = parse_history(html)
             send_telegram(format_history(items))
             print("history lines:", len(items))
