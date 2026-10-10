@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MangaBuff club bot — FULL COMBO + все возможные ошибки
-Все варианты ошибок (DDOS-Guard, 403, 429, login, challenge, cookie dead и т.д.)
+MangaBuff club bot — FULL COMBO + все ошибки + отправка в Telegram
 """
 
 import os
 import re
 import sys
-import time
 import traceback
 from datetime import datetime
 from urllib.parse import unquote
 from zoneinfo import ZoneInfo
+from typing import Optional, Tuple
 
 import requests
 from bs4 import BeautifulSoup
@@ -54,34 +53,37 @@ def now_msk() -> str:
 
 
 def send_telegram(text: str) -> None:
-    """Отправка в Telegram"""
+    """Отправка сообщения в Telegram (полная функция)"""
     if not BOT_TOKEN or not CHAT_ID:
-        print("❌ Нет BOT_TOKEN или CHAT_ID")
+        print("❌ Нет BOT_TOKEN или CHAT_ID в секретах")
         return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    r = requests.post(
-        url,
-        json={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True},
-        timeout=30,
-    )
+    data = {
+        "chat_id": CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+    r = requests.post(url, json=data, timeout=30)
     if not r.ok:
         print(f"❌ Telegram error: {r.status_code} {r.text[:300]}")
 
 
 def die(msg: str, code: int = 1) -> None:
-    """Все возможные ошибки + понятное сообщение в Telegram"""
+    """Все ошибки + отправка в Telegram"""
     print(msg, file=sys.stderr)
     send_telegram(f"❌ <b>MangaBuff bot</b>\n<code>{msg[:4000]}</code>")
     raise SystemExit(code)
 
 
-def cookie_header() -> str:
-    return FULL_COOKIE
-
-
 def xsrf_from_cookie() -> Optional[str]:
+    """Исправленная функция — теперь не падает на NameError"""
+    if not FULL_COOKIE:
+        return None
     m = re.search(r"(?:^|;\s*)XSRF-TOKEN=([^;]+)", FULL_COOKIE)
-    return unquote(m.group(1)) if m else None
+    if not m:
+        return None
+    return unquote(m.group(1))
 
 
 def base_headers(ua: str) -> dict:
@@ -103,25 +105,22 @@ def base_headers(ua: str) -> dict:
     return h
 
 
-# ====================== ВСЕ ВОЗМОЖНЫЕ ОШИБКИ ======================
+# ====================== Все возможные ошибки ======================
 
 def check_error(status: int, text: str, final_url: str, engine: str) -> Optional[str]:
-    """Проверяет все возможные варианты ошибок"""
     head = (text or "")[:1500].lower()
     if status == 403 or "ddos-guard" in head or "ddos guard" in head:
         return "DDoS-Guard 403 (защита сайта)"
     if status == 429:
-        return "429 Too Many Requests (слишком много запросов)"
+        return "429 Too Many Requests"
     if status != 200:
-        return f"HTTP {status} (ошибка сервера)"
+        return f"HTTP {status}"
     if "/login" in (final_url or "") or "login" in head:
-        return "Редирект на login — cookie мёртвый"
+        return "Cookie мёртвый (редирект на login)"
     if "challenge" in head or "captcha" in head or "bot" in head or "human" in head:
-        return "Cloudflare Challenge / CAPTCHA (защита)"
+        return "Cloudflare Challenge / CAPTCHA"
     if "защита" in head or "blocked" in head or "banned" in head:
         return "Сайт заблокировал запрос"
-    if len(text or "") < 500 and "html" in head and "form" in head:
-        return "Форма логина или страница без данных"
     return None
 
 
@@ -167,20 +166,19 @@ ENGINES.append(("requests", fetch_requests))
 
 
 def smart_fetch(url: str) -> str:
-    """Все возможные варианты + понятные ошибки"""
+    """Все варианты + понятные ошибки"""
     for engine_name, engine in ENGINES:
         for ua in UA_LIST:
-            for proxies in [None]:  # только direct (free proxy пока не используем)
+            for proxies in [None]:  # direct only (без free proxies пока)
                 try:
                     status, text, final = engine(url, ua, proxies)
                     err = check_error(status, text, final, engine_name)
                     if err:
-                        print(f"[{engine_name}] {err}")
                         raise RuntimeError(err)
                     return text
                 except Exception as e:
-                    print(f"[{engine_name}] ошибка: {e}")
-    raise RuntimeError("Все варианты провалились (DDoS-Guard / cookie dead / защита)")
+                    print(f"[{engine_name}] {e}")
+    raise RuntimeError("Все бесплатные варианты провалились")
 
 
 # ====================== Парсинг ======================
@@ -218,7 +216,7 @@ def parse_history(html: str, limit: int = 10) -> list:
     return out
 
 
-# ====================== Отправка ======================
+# ====================== Форматирование ======================
 
 def format_top(title: str, rows: list) -> str:
     medals = ["🥇", "🥈", "🥉"]
@@ -245,7 +243,7 @@ def main() -> int:
     print("MODE", MODE, "CLUB", CLUB_SLUG, "cookie_len", len(FULL_COOKIE))
 
     if not BOT_TOKEN or not CHAT_ID:
-        die("Нет BOT_TOKEN или CHAT_ID")
+        die("Нет BOT_TOKEN или CHAT_ID в секретах")
 
     if not FULL_COOKIE or len(FULL_COOKIE) < 40:
         die("FULL_COOKIE пустой или короткий")
